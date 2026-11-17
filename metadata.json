@@ -1,0 +1,6 @@
+{
+  "name": "Valora — Analisi Prezzi e Mercato",
+  "description": "Scansiona un oggetto o servizio e ottieni il prezzo ideale di vendita con analisi di mercato in tempo reale.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
