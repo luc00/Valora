@@ -15,6 +15,10 @@ export function HistorySection({
   onDeleteEntry,
   onClearAll,
 }: HistorySectionProps) {
+  if (entries.length === 0) {
+    return null;
+  }
+
   return (
     <section
       aria-label="Cronologia analisi recenti"
@@ -28,23 +32,16 @@ export function HistorySection({
           </h2>
         </div>
 
-        {entries.length > 0 && (
-          <button
-            type="button"
-            onClick={onClearAll}
-            className="text-xs font-medium text-[#64748B] transition-colors hover:text-[#DC2626] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0F172A] whitespace-nowrap shrink-0"
-          >
-            Svuota cronologia
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={onClearAll}
+          className="text-xs font-medium text-[#64748B] transition-colors hover:text-[#DC2626] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0F172A] whitespace-nowrap shrink-0"
+        >
+          Svuota cronologia
+        </button>
       </div>
 
-      {entries.length === 0 ? (
-        <p className="pt-4 text-sm text-[#64748B]">
-          Le ultime 5 analisi effettuate verranno salvate qui per consultarle in qualsiasi momento.
-        </p>
-      ) : (
-        <ul className="mt-2 divide-y divide-[#E2E8F0]">
+      <ul className="mt-2 divide-y divide-[#E2E8F0]">
           {entries.map((entry) => {
             const relativeTime = formatRelativeTimeIt(entry.createdAt);
             return (
@@ -99,7 +96,6 @@ export function HistorySection({
             );
           })}
         </ul>
-      )}
     </section>
   );
 }
