@@ -175,8 +175,15 @@ function isRateLimitOrTransientError(err: unknown): boolean {
 }
 
 function isSchemaWithToolsError(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err);
-  return message.includes('400') && message.toLowerCase().includes('schema');
+  const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    message.includes('400') &&
+    (message.includes('schema') ||
+      message.includes('mime') ||
+      message.includes('json') ||
+      message.includes('tool') ||
+      message.includes('controlled'))
+  );
 }
 
 function delay(ms: number): Promise<void> {
@@ -190,17 +197,17 @@ async function callGeminiAttempt(params: {
   systemInstruction: string;
   useSearch: boolean;
   useSchema: boolean;
-  thinkingLevel: ThinkingLevel;
+  thinkingLevel?: ThinkingLevel;
 }) {
   const { ai, model, parts, systemInstruction, useSearch, useSchema, thinkingLevel } = params;
-  const fallbackInstruction = `${systemInstruction}\n\nRESTITUISCI SOLO UN OGGETTO JSON CON LE CHIAVI: itemName, detectedCondition, mobileSummary, idealPrice, priceRange, bestTimeToSell, timingReason, priceRationale, keyFactors (array di stringhe), conversionProbability (numero intero 0-100), demandSummary, competitorPrices (array di {platform, averagePrice, conditionNote}), earnings ({grossEstimate, estimatedFees, estimatedShipping, netEarnings, notes}), risksAndPreventions (array di {risk, prevention}).`;
+  const fallbackInstruction = `${systemInstruction}\n\nRESTITUISCI ESCLUSIVAMENTE UN OGGETTO JSON VALIDO (senza testo prima o dopo) CON LE CHIAVI: itemName, detectedCondition, mobileSummary, idealPrice, priceRange, bestTimeToSell, timingReason, priceRationale, keyFactors (array di stringhe), conversionProbability (numero intero 0-100), demandSummary, competitorPrices (array di {platform, averagePrice, conditionNote}), earnings ({grossEstimate, estimatedFees, estimatedShipping, netEarnings, notes}), risksAndPreventions (array di {risk, prevention}).`;
 
   return await ai.models.generateContent({
     model,
-    contents: { parts },
+    contents: [{ role: 'user', parts }],
     config: {
       systemInstruction: useSchema ? systemInstruction : fallbackInstruction,
-      thinkingConfig: { thinkingLevel },
+      ...(thinkingLevel ? { thinkingConfig: { thinkingLevel } } : {}),
       ...(useSearch ? { tools: [{ googleSearch: {} }] } : {}),
       ...(useSchema
         ? { responseMimeType: 'application/json', responseSchema: RESPONSE_SCHEMA }
@@ -256,20 +263,25 @@ async function generateMarketAnalysis(description: string, imageDataUrl?: string
   const attempts: Array<{
     model: string;
     useSearch: boolean;
-    thinkingLevel: ThinkingLevel;
-    waitBeforeMs: number;
+    thinkingLevel?: ThinkingLevel;
+    timeoutMs: number;
   }> = [
-    { model: 'gemini-4-hydrogen', useSearch: true, thinkingLevel: ThinkingLevel.LOW, waitBeforeMs: 0 },
-    { model: 'gemini-3.1-flash-lite', useSearch: true, thinkingLevel: ThinkingLevel.LOW, waitBeforeMs: 400 },
-    { model: 'gemini-4-hydrogen', useSearch: false, thinkingLevel: ThinkingLevel.LOW, waitBeforeMs: 400 },
+    { model: 'gemini-4-hydrogen', useSearch: true, thinkingLevel: ThinkingLevel.LOW, timeoutMs: 13000 },
+    { model: 'gemini-3.1-flash-lite', useSearch: true, timeoutMs: 11000 },
+    { model: 'gemini-4-hydrogen', useSearch: false, thinkingLevel: ThinkingLevel.LOW, timeoutMs: 10000 },
   ];
 
   let lastError: unknown;
   let sawRateLimit = false;
+  const totalDeadlineMs = Date.now() + 22000;
+
   for (const attempt of attempts) {
-    if (attempt.waitBeforeMs > 0) {
-      await delay(attempt.waitBeforeMs);
+    const remainingMs = totalDeadlineMs - Date.now();
+    if (remainingMs <= 1500) {
+      break;
     }
+    const effectiveTimeoutMs = Math.min(attempt.timeoutMs, remainingMs);
+
     try {
       return await withTimeout(
         callGeminiAttempt({
@@ -281,7 +293,7 @@ async function generateMarketAnalysis(description: string, imageDataUrl?: string
           useSchema: true,
           thinkingLevel: attempt.thinkingLevel,
         }),
-        18000,
+        effectiveTimeoutMs,
         attempt.model,
       );
     } catch (err: unknown) {
@@ -290,6 +302,10 @@ async function generateMarketAnalysis(description: string, imageDataUrl?: string
         sawRateLimit = true;
       }
       if (isSchemaWithToolsError(err)) {
+        const schemaRemainingMs = totalDeadlineMs - Date.now();
+        if (schemaRemainingMs <= 1500) {
+          break;
+        }
         try {
           return await withTimeout(
             callGeminiAttempt({
@@ -301,7 +317,7 @@ async function generateMarketAnalysis(description: string, imageDataUrl?: string
               useSchema: false,
               thinkingLevel: attempt.thinkingLevel,
             }),
-            18000,
+            Math.min(attempt.timeoutMs, schemaRemainingMs),
             `${attempt.model}_noschema`,
           );
         } catch (schemaFallbackErr: unknown) {
@@ -309,9 +325,14 @@ async function generateMarketAnalysis(description: string, imageDataUrl?: string
           if (isRateLimitOrTransientError(schemaFallbackErr)) {
             sawRateLimit = true;
           }
-          if (!isRateLimitOrTransientError(schemaFallbackErr)) {
+          const schemaMsg =
+            schemaFallbackErr instanceof Error
+              ? schemaFallbackErr.message
+              : String(schemaFallbackErr);
+          if (!isRateLimitOrTransientError(schemaFallbackErr) && !schemaMsg.startsWith('TIMEOUT_')) {
             throw schemaFallbackErr;
           }
+          await delay(200);
           continue;
         }
       }
@@ -323,6 +344,7 @@ async function generateMarketAnalysis(description: string, imageDataUrl?: string
         `Tentativo ${attempt.model} (search=${attempt.useSearch}) fallito/limitato:`,
         msg,
       );
+      await delay(200);
     }
   }
 
@@ -354,7 +376,7 @@ async function startServer() {
       res.json({ report });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Errore imprevisto durante l’analisi.';
-      console.error('Errore /api/analyze:', message);
+      console.error('Errore /api/analyze:', err);
       if (message === 'MISSING_API_KEY') {
         res.status(500).json({
           error:
@@ -385,6 +407,7 @@ async function startServer() {
       }
       res.status(502).json({
         error: 'Non è stato possibile completare l’analisi di mercato. Riprova tra poco.',
+        code: message.slice(0, 120),
       });
     }
   });

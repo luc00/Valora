@@ -124,9 +124,15 @@ export default function App() {
       };
 
       if (!response.ok || !data.report) {
-        throw new Error(
-          data.error || 'Impossibile completare l’analisi di mercato. Riprova.',
-        );
+        let fallbackError = 'Impossibile completare l’analisi di mercato. Riprova.';
+        if (response.status === 413) {
+          fallbackError = 'L’immagine caricata supera la dimensione consentita. Prova con una foto più leggera.';
+        } else if (response.status === 429) {
+          fallbackError = 'Quota API temporaneamente esaurita. Attendi qualche secondo e riprova.';
+        } else if (response.status === 504) {
+          fallbackError = 'La richiesta ha impiegato troppo tempo. Riprova tra qualche istante.';
+        }
+        throw new Error(data.error || fallbackError);
       }
 
       setReport(data.report);
